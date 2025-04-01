@@ -12,6 +12,9 @@ redis缓存穿透解决方案/
 │       │   └── com/
 │       │       └── example/
 │       │           ├── RedisCachePenetrationApplication.java
+│       │           ├── config/
+│       │           │   ├── RedisConfig.java
+│       │           │   └── RedissonConfig.java
 │       │           ├── controller/
 │       │           │   └── ProductController.java
 │       │           ├── entity/
@@ -23,7 +26,9 @@ redis缓存穿透解决方案/
 │       │               └── impl/
 │       │                   └── ProductServiceImpl.java
 │       └── resources/
-│           └── application.yml
+│           ├── application.yml
+│           └── db/
+│               └── init.sql
 ├── docs/
 │   └── api.md
 └── pom.xml
@@ -35,6 +40,7 @@ redis缓存穿透解决方案/
 - Redis
 - MySQL
 - Spring Data JPA
+- Redisson
 - Lombok
 - Java 21
 
@@ -47,7 +53,7 @@ redis缓存穿透解决方案/
 
 ## 数据库配置
 
-MySQL配置在 `application.yml`中：
+MySQL配置在`application.yml`中：
 
 ```yaml
 spring:
@@ -65,7 +71,7 @@ spring:
 
 ## Redis配置
 
-Redis配置在 `application.yml`中：
+Redis配置在`application.yml`中：
 
 ```yaml
 spring:
@@ -81,14 +87,24 @@ spring:
 
 本项目实现了三种不同的缓存穿透解决方案：
 
-### 1. 基础缓存方案（Spring Cache）
+### 1. 基础缓存方案
 
-使用Spring Cache注解实现基础的缓存功能，但这种方式无法有效防止缓存穿透。
+使用Redis实现基础的缓存功能，但这种方式无法有效防止缓存穿透。
 
 ```java
-@Cacheable(value = "productCache", key = "#id")
 public Product getProductByIdWithCache(Long id) {
-    return productRepository.findById(id).orElse(null);
+    String cacheKey = CACHE_KEY_PREFIX + id;
+    // 先从缓存中获取
+    Object cachedProduct = redisTemplate.opsForValue().get(cacheKey);
+    if (cachedProduct != null) {
+        return (Product) cachedProduct;
+    }
+    // 缓存未命中，从数据库查询
+    Product product = productRepository.findById(id).orElse(null);
+    if (product != null) {
+        redisTemplate.opsForValue().set(cacheKey, product, CACHE_EXPIRE_TIME, TimeUnit.MINUTES);
+    }
+    return product;
 }
 ```
 
@@ -99,20 +115,25 @@ public Product getProductByIdWithCache(Long id) {
 ```java
 public Product getProductByIdWithNullCache(Long id) {
     String cacheKey = CACHE_KEY_PREFIX + id;
-    // 先从缓存中查询
-    Object cachedValue = redisTemplate.opsForValue().get(cacheKey);
-    if (cachedValue != null) {
-        return (Product) cachedValue;
+    String nullCacheKey = NULL_CACHE_KEY_PREFIX + id;
+    
+    // 先检查空值缓存
+    if (Boolean.TRUE.equals(redisTemplate.hasKey(nullCacheKey))) {
+        return null;
     }
-  
+    
+    // 检查正常缓存
+    Object cachedProduct = redisTemplate.opsForValue().get(cacheKey);
+    if (cachedProduct != null) {
+        return (Product) cachedProduct;
+    }
+
     // 缓存未命中，从数据库查询
     Product product = productRepository.findById(id).orElse(null);
     if (product != null) {
-        // 将查询结果存入缓存
         redisTemplate.opsForValue().set(cacheKey, product, CACHE_EXPIRE_TIME, TimeUnit.MINUTES);
     } else {
-        // 将空值也存入缓存，防止缓存穿透
-        redisTemplate.opsForValue().set(cacheKey, "", 5, TimeUnit.MINUTES);
+        redisTemplate.opsForValue().set(nullCacheKey, "", 5, TimeUnit.MINUTES);
     }
     return product;
 }
@@ -120,22 +141,23 @@ public Product getProductByIdWithNullCache(Long id) {
 
 ### 3. 布隆过滤器方案
 
-使用布隆过滤器预先判断数据是否存在，可以有效防止缓存穿透。
+使用Redisson的布隆过滤器预先判断数据是否存在，可以有效防止缓存穿透。
 
 ```java
 public Product getProductByIdWithBloomFilter(Long id) {
     String cacheKey = CACHE_KEY_PREFIX + id;
-    // 先从缓存中查询
-    Object cachedValue = redisTemplate.opsForValue().get(cacheKey);
-    if (cachedValue != null) {
-        return (Product) cachedValue;
+    
+    // 先从缓存中获取
+    Object cachedProduct = redisTemplate.opsForValue().get(cacheKey);
+    if (cachedProduct != null) {
+        return (Product) cachedProduct;
     }
-  
+    
     // 使用布隆过滤器判断
-    if (!isValidId(id)) {
+    if (!bloomFilter.contains(id)) {
         return null;
     }
-  
+    
     // 从数据库查询
     Product product = productRepository.findById(id).orElse(null);
     if (product != null) {
@@ -150,22 +172,21 @@ public Product getProductByIdWithBloomFilter(Long id) {
 项目提供了四个测试接口来演示不同的缓存穿透解决方案：
 
 1. 无缓存方案
-
    ```
    GET /api/products/{id}
    ```
-2. Spring Cache方案
 
+2. 基础缓存方案
    ```
    GET /api/products/cache/{id}
    ```
-3. 空值缓存方案
 
+3. 空值缓存方案
    ```
    GET /api/products/null-cache/{id}
    ```
-4. 布隆过滤器方案
 
+4. 布隆过滤器方案
    ```
    GET /api/products/bloom-filter/{id}
    ```
@@ -178,42 +199,41 @@ public Product getProductByIdWithBloomFilter(Long id) {
 
 ## 运行项目
 
-1. 确保MySQL服务器已启动，并创建数据库：
-
-   ```sql
-   CREATE DATABASE javalab;
+1. 确保MySQL服务器已启动，并执行数据库初始化脚本：
+   ```bash
+   mysql -u root -pdeesdees < src/main/resources/db/init.sql
    ```
-2. 确保Redis服务器已启动
-3. 在项目根目录执行：
 
+2. 确保Redis服务器已启动
+
+3. 在项目根目录执行：
    ```bash
    mvn spring-boot:run
    ```
-4. 访问测试接口：
 
+4. 访问测试接口：
    ```
    http://localhost:8080/api/products/{id}
    ```
 
 ## 性能对比
 
-1. 无缓存方案：每次请求都会查询数据库 (7ms)
-2. Spring Cache方案(5ms)：缓存未命中时会查询数据库(7ms)，但无法防止缓存穿透
+1. 无缓存方案：每次请求都会查询数据库
+2. 基础缓存方案：缓存未命中时会查询数据库，但无法防止缓存穿透
 3. 空值缓存方案：可以有效防止缓存穿透，但会占用额外的缓存空间
 4. 布隆过滤器方案：可以有效防止缓存穿透，且内存占用较小，但存在误判可能
 
 ## 注意事项
 
-1. 本项目中的布隆过滤器实现是简化版的，实际项目中建议使用Google Guava库中的BloomFilter
-2. 空值缓存方案中的空值过期时间应该设置得比正常数据短
-3. 布隆过滤器的误判率需要根据实际业务场景来权衡
-4. 实际项目中应该考虑使用分布式锁来防止缓存击穿
+1. 本项目使用Redisson实现布隆过滤器，提供了更专业的实现
+2. 空值缓存方案中的空值过期时间设置为5分钟
+3. 正常数据的缓存过期时间设置为30分钟
+4. 布隆过滤器的误判率设置为0.01，预期插入量为1000
 5. 数据库表结构会自动创建，无需手动创建
 
 ## 接口文档
 
 详细的接口文档请参考 `docs/api.md` 文件。
-
 
 ## 面试题目
 
