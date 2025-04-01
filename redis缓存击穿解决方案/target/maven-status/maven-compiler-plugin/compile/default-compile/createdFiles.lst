@@ -1,0 +1,8 @@
+com\example\controller\ProductController.class
+com\example\RedisCacheBreakdownApplication.class
+com\example\config\RedisConfig.class
+com\example\service\ProductService.class
+com\example\entity\Product.class
+com\example\service\impl\ProductServiceImpl.class
+com\example\repository\ProductRepository.class
+com\example\config\RedissonConfig.class

@@ -3,6 +3,7 @@ package com.example.service.impl;
 import com.example.entity.Product;
 import com.example.repository.ProductRepository;
 import com.example.service.ProductService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
@@ -20,6 +21,7 @@ public class ProductServiceImpl implements ProductService {
     private final ProductRepository productRepository;
     private final RedisTemplate<String, Object> redisTemplate;
     private final RedissonClient redissonClient;
+    private final ObjectMapper objectMapper;
 
     private static final String CACHE_KEY_PREFIX = "product:";
     private static final long CACHE_EXPIRE_TIME = 30; // 30分钟
@@ -40,7 +42,7 @@ public class ProductServiceImpl implements ProductService {
         Object cachedProduct = redisTemplate.opsForValue().get(cacheKey);
         if (cachedProduct != null) {
             log.info("缓存命中，商品ID: {}", id);
-            return (Product) cachedProduct;
+            return convertToProduct(cachedProduct);
         }
 
         // 缓存未命中，从数据库查询
@@ -63,7 +65,7 @@ public class ProductServiceImpl implements ProductService {
         Object cachedProduct = redisTemplate.opsForValue().get(cacheKey);
         if (cachedProduct != null) {
             log.info("缓存命中，商品ID: {}", id);
-            return (Product) cachedProduct;
+            return convertToProduct(cachedProduct);
         }
 
         // 尝试获取锁
@@ -74,7 +76,7 @@ public class ProductServiceImpl implements ProductService {
                 cachedProduct = redisTemplate.opsForValue().get(cacheKey);
                 if (cachedProduct != null) {
                     log.info("双重检查缓存命中，商品ID: {}", id);
-                    return (Product) cachedProduct;
+                    return convertToProduct(cachedProduct);
                 }
 
                 // 从数据库查询
@@ -112,7 +114,7 @@ public class ProductServiceImpl implements ProductService {
         Object cachedProduct = redisTemplate.opsForValue().get(cacheKey);
         if (cachedProduct != null) {
             log.info("缓存命中，商品ID: {}", id);
-            return (Product) cachedProduct;
+            return convertToProduct(cachedProduct);
         }
 
         // 获取Redisson分布式锁
@@ -124,7 +126,7 @@ public class ProductServiceImpl implements ProductService {
                     cachedProduct = redisTemplate.opsForValue().get(cacheKey);
                     if (cachedProduct != null) {
                         log.info("双重检查缓存命中，商品ID: {}", id);
-                        return (Product) cachedProduct;
+                        return convertToProduct(cachedProduct);
                     }
 
                     // 从数据库查询
@@ -152,6 +154,18 @@ public class ProductServiceImpl implements ProductService {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    private Product convertToProduct(Object obj) {
+        try {
+            if (obj instanceof Product) {
+                return (Product) obj;
+            }
+            return objectMapper.convertValue(obj, Product.class);
+        } catch (Exception e) {
+            log.error("转换Product对象失败", e);
             return null;
         }
     }
